@@ -29,11 +29,11 @@
 
 - **代码生成**：将像素画导出为 C 语言代码文件
 
-## 运行方法
+## 运行方法（）
 
 * 下载发行版中的 `PixelDrawingTool.zip` 文件，解压后运行打包好的应用程序。
 
-* 使用 Python 运行源代码程序：
+* 或者使用 Python3.6+ 运行源代码程序：
 
 ```python
 pip install PyQt6
