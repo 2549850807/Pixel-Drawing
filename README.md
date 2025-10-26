@@ -29,22 +29,18 @@
 
 - **代码生成**：将像素画导出为 C 语言代码文件
 
-## 安装要求
+## 运行方法
 
-- Python 3.6 或更高版本
-- PyQt6
+* 下载发行版中的 `PixelDrawingTool.zip` 文件，解压后运行打包好的应用程序。
 
-安装 PyQt6：
-```bash
+* 使用 Python 运行源代码程序：
+
+```python
 pip install PyQt6
+python pixel_drawing_tool.py
 ```
 
 ## 使用方法
-
-1. 运行程序：
-   ```bash
-   python pixel_drawing_tool.py
-   ```
 
 2. 使用工具栏选择绘图工具
 
