@@ -1,0 +1,847 @@
+# -*- coding: utf-8 -*-
+"""
+像素绘制工具
+作者: MistyRainDreamX
+创建日期: 2025-10-23
+更新日期: 2025-10-26
+开源地址：
+描述: 这是一个基于 PyQt6 的像素绘制工具，支持多种绘图功能和导出为 C 代码
+
+依赖:
+- Python 3.6+
+- PyQt6
+
+安装依赖:
+pip install PyQt6
+
+功能:
+- 多种绘图工具（点、直线、矩形、圆形、三角形、菱形、五边形、六边形、星形）
+- 可调节画布大小（1-999 像素）
+- 缩放功能（Ctrl + 鼠标滚轮）
+- 辅助线
+- 撤销功能（Ctrl + Z）
+- 清屏功能（Delete 键）
+- 导出为 C 语言代码
+"""
+
+import sys
+import os
+import math
+import subprocess
+# PyQt6 依赖，需要先安装: pip install PyQt6
+from PyQt6.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QLabel, QSpinBox, QPushButton,
+    QVBoxLayout, QHBoxLayout, QToolBar, QColorDialog, QSizePolicy, QScrollArea, QToolButton, QMenu, QFileDialog, QCheckBox
+)
+# PyQt6 核心模块
+from PyQt6.QtCore import Qt, QRect, QPoint, QEvent
+# PyQt6 GUI 模块
+from PyQt6.QtGui import QPainter, QColor, QMouseEvent, QWheelEvent, QIcon, QPixmap, QAction, QActionGroup, QKeySequence, QShortcut
+
+
+class PixelGridWidget(QWidget):
+    # 定义工具常量
+    TOOL_PENCIL = 1
+    TOOL_LINE = 2
+    TOOL_RECTANGLE = 3
+    TOOL_CIRCLE = 4
+    TOOL_TRIANGLE = 5
+    TOOL_DIAMOND = 6
+    TOOL_PENTAGON = 7
+    TOOL_HEXAGON = 8
+    TOOL_STAR = 9
+    
+    
+    def __init__(self, width=32, height=32, pixel_size=20):
+        super().__init__()
+        self.width = width
+        self.height = height
+        self.pixel_size = pixel_size
+        self.grid = [[False for _ in range(width)] for _ in range(height)]
+        self.zoom_factor = 1.0
+        self.current_tool = self.TOOL_PENCIL
+        self.drawing_state = None
+        self.start_pos = None
+        self.temp_grid = None
+        self.fill_modes = {
+            self.TOOL_RECTANGLE: False,
+            self.TOOL_CIRCLE: False,
+            self.TOOL_TRIANGLE: False,
+            self.TOOL_DIAMOND: False,
+            self.TOOL_PENTAGON: False,
+            self.TOOL_STAR: False,
+            self.TOOL_HEXAGON: False
+        }
+        self.last_pos = None
+        self.preview_end = None
+        self.guideline_interval = 1
+        
+        # 撤销历史栈
+        self.history = []
+        
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        
+        self.setMouseTracking(True)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, True)
+        self.setAutoFillBackground(False)
+        
+        self.update_grid_size()
+        
+    def set_grid_size(self, width, height):
+        # 设置新的网格大小
+        self.width = width
+        self.height = height
+        self.grid = [[False for _ in range(width)] for _ in range(height)]
+        self.update_grid_size()
+        
+    def update_grid_size(self):
+        # 根据网格尺寸和像素大小更新控件大小
+        self.setFixedSize(
+            int(self.width * self.pixel_size * self.zoom_factor),
+            int(self.height * self.pixel_size * self.zoom_factor)
+        )
+        self.update()
+        
+    def paintEvent(self, event):
+        # 高性能绘制：一次性填充背景，按行绘制白色像素
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, False)
+
+        actual_pixel_size = self.pixel_size * self.zoom_factor
+        grid_to_draw = self.temp_grid if self.temp_grid is not None else self.grid
+
+        # 填充整个控件背景为黑色
+        painter.fillRect(self.rect(), Qt.GlobalColor.black)
+
+        # 根据辅助线间隔绘制网格线
+        painter.setPen(QColor(80, 80, 80))
+        for x in range(0, self.width + 1, self.guideline_interval):
+            x_pos = int(round(x * actual_pixel_size))
+            painter.drawLine(x_pos, 0, x_pos, int(round(self.height * actual_pixel_size)))
+        for y in range(0, self.height + 1, self.guideline_interval):
+            y_pos = int(round(y * actual_pixel_size))
+            painter.drawLine(0, y_pos, int(round(self.width * actual_pixel_size)), y_pos)
+
+        # 只绘制白色像素，按行合并为水平线段
+        w = self.width
+        h = self.height
+        ps = actual_pixel_size
+        for y in range(h):
+            row = grid_to_draw[y]
+            x = 0
+            while x < w:
+                while x < w and not row[x]:
+                    x += 1
+                if x >= w:
+                    break
+                start = x
+                while x < w and row[x]:
+                    x += 1
+                end = x - 1
+                # 为整个白色线段绘制一个矩形，使用四舍五入的边界避免行间间隙
+                x0 = int(round(start * ps))
+                x1 = int(round((end + 1) * ps))
+                y0 = int(round(y * ps))
+                y1 = int(round((y + 1) * ps))
+                painter.fillRect(
+                    QRect(x0, y0, max(1, x1 - x0), max(1, y1 - y0)),
+                    Qt.GlobalColor.white
+                )
+                
+    def _get_pixel_coordinates(self, pos):
+        # 将鼠标位置转换为像素坐标
+        actual_pixel_size = self.pixel_size * self.zoom_factor
+        x = int(pos.x() / actual_pixel_size)
+        y = int(pos.y() / actual_pixel_size)
+        return x, y
+    
+    def _draw_line(self, grid, start_pos, end_pos, state):
+        # 使用 Bresenham 算法在两点间绘制直线
+        x0, y0 = start_pos
+        x1, y1 = end_pos
+        
+        dx = abs(x1 - x0)
+        dy = abs(y1 - y0)
+        sx = 1 if x0 < x1 else -1
+        sy = 1 if y0 < y1 else -1
+        err = dx - dy
+        
+        x, y = x0, y0
+        
+        while True:
+            if 0 <= x < self.width and 0 <= y < self.height:
+                grid[y][x] = state
+                
+            if x == x1 and y == y1:
+                break
+                
+            e2 = 2 * err
+            if e2 > -dy:
+                err -= dy
+                x += sx
+            if e2 < dx:
+                err += dx
+                y += sy
+                
+    def _draw_rectangle(self, grid, start_pos, end_pos, state, filled=False):
+        # 在两点间绘制矩形
+        x0, y0 = start_pos
+        x1, y1 = end_pos
+        
+        # 标准化坐标
+        min_x, max_x = min(x0, x1), max(x0, x1)
+        min_y, max_y = min(y0, y1), max(y0, y1)
+        
+        if filled:
+            # 绘制填充矩形
+            for y in range(min_y, max_y + 1):
+                for x in range(min_x, max_x + 1):
+                    if 0 <= x < self.width and 0 <= y < self.height:
+                        grid[y][x] = state
+        else:
+            # 只绘制轮廓
+            # 顶部和底部边
+            for x in range(min_x, max_x + 1):
+                if 0 <= x < self.width:
+                    if 0 <= min_y < self.height:
+                        grid[min_y][x] = state
+                    if 0 <= max_y < self.height:
+                        grid[max_y][x] = state
+                        
+            # 左边和右边（不包括已绘制的角）
+            for y in range(min_y + 1, max_y):
+                if 0 <= y < self.height:
+                    if 0 <= min_x < self.width:
+                        grid[y][min_x] = state
+                    if 0 <= max_x < self.width:
+                        grid[y][max_x] = state
+    
+    def _draw_circle(self, grid, center, radius, state, filled=False):
+        # 绘制圆形
+        cx, cy = center
+        if radius <= 0:
+            return
+
+        if filled:
+            # 填充区域：水平扫描线填充
+            for y in range(-radius, radius + 1):
+                rem = radius * radius - y * y
+                if rem < 0:
+                    continue
+                x_max = int(round(math.sqrt(rem)))
+                for x in range(-x_max, x_max + 1):
+                    px, py = cx + x, cy + y
+                    if 0 <= px < self.width and 0 <= py < self.height:
+                        grid[py][px] = state
+
+        # 轮廓：参数采样并连接连续点避免稀疏角
+        steps = max(32, int(8 * radius))
+        last = None
+        for i in range(steps + 1):
+            theta = 2.0 * math.pi * i / steps
+            px = int(round(cx + radius * math.cos(theta)))
+            py = int(round(cy + radius * math.sin(theta)))
+            if 0 <= px < self.width and 0 <= py < self.height:
+                if last is not None:
+                    self._draw_line(grid, last, (px, py), state)
+                else:
+                    grid[py][px] = state
+                last = (px, py)
+    
+    def _draw_triangle(self, grid, points, state, filled=False):
+        # 绘制三角形
+        if len(points) != 3:
+            return
+            
+        if filled:
+            # 扫描线填充三角形
+            x1, y1 = points[0]
+            x2, y2 = points[1]
+            x3, y3 = points[2]
+            min_y = max(0, min(y1, y2, y3))
+            max_y = min(self.height - 1, max(y1, y2, y3))
+            for y in range(min_y, max_y + 1):
+                xs = []
+                if (y1 != y2) and (min(y1, y2) <= y < max(y1, y2)):
+                    xs.append(int(x1 + (y - y1) * (x2 - x1) / (y2 - y1)))
+                if (y2 != y3) and (min(y2, y3) <= y < max(y2, y3)):
+                    xs.append(int(x2 + (y - y2) * (x3 - x2) / (y3 - y2)))
+                if (y3 != y1) and (min(y3, y1) <= y < max(y3, y1)):
+                    xs.append(int(x3 + (y - y3) * (x1 - x3) / (y1 - y3)))
+                if len(xs) >= 2:
+                    xs.sort()
+                    x_start = max(0, min(xs[0], xs[1]))
+                    x_end = min(self.width - 1, max(xs[0], xs[1]))
+                    for x in range(x_start, x_end + 1):
+                        grid[y][x] = state
+
+        else:
+            # 绘制轮廓
+            self._draw_line(grid, points[0], points[1], state)
+            self._draw_line(grid, points[1], points[2], state)
+            self._draw_line(grid, points[2], points[0], state)
+    
+    def _draw_polygon(self, grid, points, state, filled=False):
+        # 绘制多边形
+        if not points or len(points) < 3:
+            return
+        if filled:
+            # 扫描线填充：计算每行的交点
+            min_y = max(0, min(p[1] for p in points))
+            max_y = min(self.height - 1, max(p[1] for p in points))
+            n = len(points)
+            for y in range(min_y, max_y + 1):
+                xs = []
+                for i in range(n):
+                    x1, y1 = points[i]
+                    x2, y2 = points[(i + 1) % n]
+                    if y1 == y2:
+                        continue
+                    y_min = min(y1, y2)
+                    y_max = max(y1, y2)
+                    if y_min <= y < y_max:
+                        x_intersect = x1 + (y - y1) * (x2 - x1) / (y2 - y1)
+                        xs.append(x_intersect)
+                xs.sort()
+                for j in range(0, len(xs) - 1, 2):
+                    left = xs[j]
+                    right = xs[j + 1]
+                    x_start = max(0, int(math.ceil(min(left, right))))
+                    x_end = min(self.width - 1, int(math.floor(max(left, right))))
+                    for x in range(x_start, x_end + 1):
+                        grid[y][x] = state
+            # 确保顶点本身被设置
+            for vx, vy in points:
+                if 0 <= vx < self.width and 0 <= vy < self.height:
+                    grid[vy][vx] = state
+        else:
+            # 绘制轮廓：连接连续顶点
+            for i in range(len(points)):
+                self._draw_line(grid, points[i], points[(i + 1) % len(points)], state)
+
+    def _fill_flat_triangle(self, grid, p1, p2, p3, state):
+        # 填充平底三角形的辅助方法
+        if p2[0] > p3[0]:
+            p2, p3 = p3, p2
+            
+        if p2[1] != p1[1]:
+            invslope1 = (p2[0] - p1[0]) / (p2[1] - p1[1])
+        else:
+            invslope1 = 0
+            
+        if p3[1] != p1[1]:
+            invslope2 = (p3[0] - p1[0]) / (p3[1] - p1[1])
+        else:
+            invslope2 = 0
+            
+        curx1 = float(p1[0])
+        curx2 = float(p1[0])
+        
+        for y in range(p1[1], p2[1] + 1):
+            if 0 <= y < self.height:
+                start_x = int(curx1)
+                end_x = int(curx2)
+                for x in range(start_x, end_x + 1):
+                    if 0 <= x < self.width:
+                        grid[y][x] = state
+            curx1 += invslope1
+            curx2 += invslope2
+    
+    def _clear_temp_grid(self):
+        # 清除临时网格
+        self.temp_grid = None
+        self.start_pos = None
+        
+    def set_tool(self, tool):
+        # 设置当前绘图工具
+        self.current_tool = tool
+        self._clear_temp_grid()
+        
+    def set_fill_mode(self, tool, filled):
+        # 设置特定形状工具是否填充
+        if tool in self.fill_modes:
+            self.fill_modes[tool] = filled
+        
+    def _snapshot(self):
+        # 将当前网格的深拷贝推入历史记录
+        self.history.append([row[:] for row in self.grid])
+
+    def _clamp_to_bounds(self, x, y):
+        # 将坐标限制在有效网格范围内
+        x = max(0, min(self.width - 1, x))
+        y = max(0, min(self.height - 1, y))
+        return x, y
+
+    def mousePressEvent(self, event: QMouseEvent):
+        # 处理鼠标点击以切换像素
+        x, y = self._get_pixel_coordinates(event.position())
+        x, y = self._clamp_to_bounds(x, y)
+            
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.drawing_state = True
+        elif event.button() == Qt.MouseButton.RightButton:
+            self.drawing_state = False
+        else:
+            return
+            
+        if self.current_tool == self.TOOL_PENCIL:
+            # 铅笔工具 - 绘制单个像素并设置插值起点
+            self._snapshot()
+            self.grid[y][x] = self.drawing_state
+            self.last_pos = (x, y)
+            self.update()
+        else:
+            # 形状工具 - 记录起始位置
+            self._snapshot()
+            self.start_pos = (x, y)
+            self.temp_grid = [row[:] for row in self.grid]
+            
+    def mouseMoveEvent(self, event: QMouseEvent):
+        # 处理鼠标移动以连续绘制
+        x, y = self._get_pixel_coordinates(event.position())
+        x, y = self._clamp_to_bounds(x, y)
+            
+        if self.current_tool == self.TOOL_PENCIL:
+            # 铅笔工具 - 按住按钮时连续绘制并用直线插值
+            if self.drawing_state is not None:
+                if self.last_pos is not None:
+                    self._draw_line(self.grid, self.last_pos, (x, y), self.drawing_state)
+                else:
+                    self.grid[y][x] = self.drawing_state
+                self.last_pos = (x, y)
+                self.update()
+        elif self.start_pos is not None and self.temp_grid is not None:
+            # 形状工具 - 更新预览
+            self.temp_grid = [row[:] for row in self.grid]
+            
+            # 绘制形状预览
+            if self.current_tool == self.TOOL_LINE:
+                self._draw_line(self.temp_grid, self.start_pos, (x, y), self.drawing_state)
+            elif self.current_tool == self.TOOL_RECTANGLE:
+                self._draw_rectangle(self.temp_grid, self.start_pos, (x, y), self.drawing_state, self.fill_modes[self.TOOL_RECTANGLE])
+            elif self.current_tool == self.TOOL_CIRCLE:
+                dx = x - self.start_pos[0]
+                dy = y - self.start_pos[1]
+                radius = int(math.sqrt(dx*dx + dy*dy))
+                self._draw_circle(self.temp_grid, self.start_pos, radius, self.drawing_state, self.fill_modes[self.TOOL_CIRCLE])
+            elif self.current_tool == self.TOOL_TRIANGLE:
+                points = [self.start_pos, (x, self.start_pos[1]), (self.start_pos[0], y)]
+                self._draw_triangle(self.temp_grid, points, self.drawing_state, self.fill_modes[self.TOOL_TRIANGLE])
+            elif self.current_tool == self.TOOL_DIAMOND:
+                cx, cy = self.start_pos
+                dx, dy = x - cx, y - cy
+                r = max(1, int(round(math.sqrt(dx*dx + dy*dy))))
+                theta = math.atan2(dy, dx)
+                cos_t, sin_t = math.cos(theta), math.sin(theta)
+                base = [(0, -1), (1, 0), (0, 1), (-1, 0)]
+                pts = []
+                for bx, by in base:
+                    rx = int(round(cx + r * (bx * cos_t - by * sin_t)))
+                    ry = int(round(cy + r * (bx * sin_t + by * cos_t)))
+                    pts.append((rx, ry))
+                self._draw_polygon(self.temp_grid, pts, self.drawing_state, self.fill_modes[self.TOOL_DIAMOND])
+            elif self.current_tool == self.TOOL_PENTAGON:
+                cx, cy = self.start_pos
+                dx, dy = x - cx, y - cy
+                r = max(1, int(round(math.sqrt(dx*dx + dy*dy))))
+                angle_offset = -math.pi / 2 + math.atan2(dy, dx)
+                pts = []
+                for i in range(5):
+                    theta = angle_offset + 2 * math.pi * i / 5
+                    px = int(round(cx + r * math.cos(theta)))
+                    py = int(round(cy + r * math.sin(theta)))
+                    pts.append((px, py))
+                self._draw_polygon(self.temp_grid, pts, self.drawing_state, self.fill_modes[self.TOOL_PENTAGON])
+            elif self.current_tool == self.TOOL_STAR:
+                cx, cy = self.start_pos
+                dx, dy = x - cx, y - cy
+                r_outer = max(1, int(round(math.sqrt(dx*dx + dy*dy))))
+                r_inner = max(1, int(round(r_outer * 0.381966)))
+                angle_offset = -math.pi / 2 + math.atan2(dy, dx)
+                pts = []
+                for i in range(10):
+                    r = r_outer if i % 2 == 0 else r_inner
+                    theta = angle_offset + math.pi * i / 5
+                    px = int(round(cx + r * math.cos(theta)))
+                    py = int(round(cy + r * math.sin(theta)))
+                    pts.append((px, py))
+                self._draw_polygon(self.temp_grid, pts, self.drawing_state, self.fill_modes[self.TOOL_STAR])
+            elif self.current_tool == self.TOOL_HEXAGON:
+                cx, cy = self.start_pos
+                dx, dy = x - cx, y - cy
+                r = max(1, int(round(math.sqrt(dx*dx + dy*dy))))
+                angle_offset = -math.pi / 2 + math.atan2(dy, dx)
+                pts = []
+                for i in range(6):
+                    theta = angle_offset + 2 * math.pi * i / 6
+                    px = int(round(cx + r * math.cos(theta)))
+                    py = int(round(cy + r * math.sin(theta)))
+                    pts.append((px, py))
+                self._draw_polygon(self.temp_grid, pts, self.drawing_state, self.fill_modes[self.TOOL_HEXAGON])
+
+            self.preview_end = (x, y)
+            self.update()
+                
+    def mouseReleaseEvent(self, event: QMouseEvent):
+        # 处理鼠标释放以完成绘制
+        if self.drawing_state is None:
+            return
+            
+        x, y = self._get_pixel_coordinates(event.position())
+        x, y = self._clamp_to_bounds(x, y)
+            
+        if self.current_tool == self.TOOL_PENCIL:
+            # 铅笔工具 - 完成绘制
+            self.grid[y][x] = self.drawing_state
+            self.last_pos = None
+        elif self.start_pos is not None:
+            # 形状工具 - 完成绘制
+            if self.current_tool == self.TOOL_LINE:
+                self._draw_line(self.grid, self.start_pos, (x, y), self.drawing_state)
+            elif self.current_tool == self.TOOL_RECTANGLE:
+                self._draw_rectangle(self.grid, self.start_pos, (x, y), self.drawing_state, self.fill_modes[self.TOOL_RECTANGLE])
+            elif self.current_tool == self.TOOL_CIRCLE:
+                dx = x - self.start_pos[0]
+                dy = y - self.start_pos[1]
+                radius = int(math.sqrt(dx*dx + dy*dy))
+                self._draw_circle(self.grid, self.start_pos, radius, self.drawing_state, self.fill_modes[self.TOOL_CIRCLE])
+            elif self.current_tool == self.TOOL_TRIANGLE:
+                points = [self.start_pos, (x, self.start_pos[1]), (self.start_pos[0], y)]
+                self._draw_triangle(self.grid, points, self.drawing_state, self.fill_modes[self.TOOL_TRIANGLE])
+            elif self.current_tool == self.TOOL_DIAMOND:
+                cx, cy = self.start_pos
+                dx, dy = x - cx, y - cy
+                r = max(1, int(round(math.sqrt(dx*dx + dy*dy))))
+                theta = math.atan2(dy, dx)
+                cos_t, sin_t = math.cos(theta), math.sin(theta)
+                base = [(0, -1), (1, 0), (0, 1), (-1, 0)]
+                pts = []
+                for bx, by in base:
+                    rx = int(round(cx + r * (bx * cos_t - by * sin_t)))
+                    ry = int(round(cy + r * (bx * sin_t + by * cos_t)))
+                    pts.append((rx, ry))
+                self._draw_polygon(self.grid, pts, self.drawing_state, self.fill_modes[self.TOOL_DIAMOND])
+            elif self.current_tool == self.TOOL_PENTAGON:
+                cx, cy = self.start_pos
+                dx, dy = x - cx, y - cy
+                r = max(1, int(round(math.sqrt(dx*dx + dy*dy))))
+                angle_offset = -math.pi / 2 + math.atan2(dy, dx)
+                pts = []
+                for i in range(5):
+                    theta = angle_offset + 2 * math.pi * i / 5
+                    px = int(round(cx + r * math.cos(theta)))
+                    py = int(round(cy + r * math.sin(theta)))
+                    pts.append((px, py))
+                self._draw_polygon(self.grid, pts, self.drawing_state, self.fill_modes[self.TOOL_PENTAGON])
+            elif self.current_tool == self.TOOL_STAR:
+                cx, cy = self.start_pos
+                dx, dy = x - cx, y - cy
+                r_outer = max(1, int(round(math.sqrt(dx*dx + dy*dy))))
+                r_inner = max(1, int(round(r_outer * 0.381966)))
+                angle_offset = -math.pi / 2 + math.atan2(dy, dx)
+                pts = []
+                for i in range(10):
+                    r = r_outer if i % 2 == 0 else r_inner
+                    theta = angle_offset + math.pi * i / 5
+                    px = int(round(cx + r * math.cos(theta)))
+                    py = int(round(cy + r * math.sin(theta)))
+                    pts.append((px, py))
+                self._draw_polygon(self.grid, pts, self.drawing_state, self.fill_modes[self.TOOL_STAR])
+            elif self.current_tool == self.TOOL_HEXAGON:
+                cx, cy = self.start_pos
+                dx, dy = x - cx, y - cy
+                r = max(1, int(round(math.sqrt(dx*dx + dy*dy))))
+                angle_offset = -math.pi / 2 + math.atan2(dy, dx)
+                pts = []
+                for i in range(6):
+                    theta = angle_offset + 2 * math.pi * i / 6
+                    px = int(round(cx + r * math.cos(theta)))
+                    py = int(round(cy + r * math.sin(theta)))
+                    pts.append((px, py))
+                self._draw_polygon(self.grid, pts, self.drawing_state, self.fill_modes[self.TOOL_HEXAGON])
+
+        self._clear_temp_grid()
+        self.preview_end = None
+        self.drawing_state = None
+        self.update()
+            
+    def wheelEvent(self, event: QWheelEvent):
+        # 处理 Ctrl+滚轮 缩放
+        if event.modifiers() == Qt.KeyboardModifier.ControlModifier:
+            delta = event.angleDelta().y()
+            
+            if delta > 0:
+                self.zoom_factor *= 1.1
+            elif delta < 0:
+                self.zoom_factor /= 1.1
+                
+            self.zoom_factor = max(0.1, min(self.zoom_factor, 10.0))
+            
+            self.update_grid_size()
+            self.update()
+        else:
+            super().wheelEvent(event)
+            
+    def clear_grid(self):
+        # 清除整个网格
+        if hasattr(self, 'history'):
+            self.history.append([row[:] for row in self.grid])
+        self.grid = [[False for _ in range(self.width)] for _ in range(self.height)]
+        self.update()
+
+    def set_guideline_interval(self, interval):
+        # 设置辅助线间隔
+        self.guideline_interval = interval
+        self.update()
+
+
+class MainWindow(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("像素绘制工具")
+        self.setGeometry(100, 100, 800, 600)
+        
+        icon_path = os.path.join(os.path.dirname(__file__), "app_icon.ico")
+        if os.path.exists(icon_path):
+            self.setWindowIcon(QIcon(icon_path))
+        
+        QApplication.instance().installEventFilter(self)
+        
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+        main_layout = QVBoxLayout(central_widget)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        
+        self.create_toolbar()
+        
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        
+        self.pixel_grid = PixelGridWidget(32, 32, 20)
+        self.scroll_area.setWidget(self.pixel_grid)
+        main_layout.addWidget(self.scroll_area)
+        
+        control_panel = QWidget()
+        control_layout = QHBoxLayout(control_panel)
+        
+        width_label = QLabel("宽度：")
+        self.width_spinbox = QSpinBox()
+        self.width_spinbox.setRange(1, 999)
+        self.width_spinbox.setValue(32)
+        self.width_spinbox.valueChanged.connect(self.update_grid_size)
+        self.width_spinbox.setButtonSymbols(QSpinBox.ButtonSymbols.NoButtons)
+        
+        height_label = QLabel("高度：")
+        self.height_spinbox = QSpinBox()
+        self.height_spinbox.setRange(1, 999)
+        self.height_spinbox.setValue(32)
+        self.height_spinbox.valueChanged.connect(self.update_grid_size)
+        self.height_spinbox.setButtonSymbols(QSpinBox.ButtonSymbols.NoButtons)
+        
+        guideline_label = QLabel("辅助线间隔：")
+        self.guideline_spinbox = QSpinBox()
+        self.guideline_spinbox.setRange(1, 100)
+        self.guideline_spinbox.setValue(1)
+        self.guideline_spinbox.valueChanged.connect(self.update_guideline_interval)
+        self.guideline_spinbox.setButtonSymbols(QSpinBox.ButtonSymbols.NoButtons)
+        
+        clear_button = QPushButton("清屏")
+        clear_button.clicked.connect(self.clear_grid)
+
+        create_button = QPushButton("生成代码")
+        create_button.clicked.connect(self.create_pixel_files)
+        
+        delete_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Delete), self)
+        delete_shortcut.activated.connect(self.clear_grid)
+        
+        control_layout.addWidget(width_label)
+        control_layout.addWidget(self.width_spinbox)
+        control_layout.addWidget(height_label)
+        control_layout.addWidget(self.height_spinbox)
+        control_layout.addWidget(guideline_label)
+        control_layout.addWidget(self.guideline_spinbox)
+        control_layout.addWidget(clear_button)
+        control_layout.addWidget(create_button)
+        control_layout.addStretch()
+        
+        main_layout.addWidget(control_panel)
+
+        undo_shortcut = QShortcut(QKeySequence('Ctrl+Z'), self)
+        undo_shortcut.activated.connect(self.undo_last_action)
+        
+    def undo_last_action(self):
+        if hasattr(self.pixel_grid, 'history') and self.pixel_grid.history:
+            self.pixel_grid.grid = self.pixel_grid.history.pop()
+            self.pixel_grid.update()
+        
+    def create_pixel_files(self):
+        # 让用户选择保存文件的目录
+        directory = QFileDialog.getExistingDirectory(self, "Select Output Directory")
+        if not directory:
+            return
+        
+        # 生成 C 代码内容
+        lines = []
+        lines.append('void Pixel_Image_Draw(void);\n\n')
+        lines.append('#define Pixel_Draw(x, y) my_pixel_draw(x, y)\n\n')
+        lines.append('void Pixel_Image_Draw(void) {\n')
+        lines.append('    // 根据画布（以左上角为原点）逐像素输出 Pixel_Draw(x, y);\n')
+        grid = self.pixel_grid.grid
+        height = len(grid)
+        width = len(grid[0]) if height > 0 else 0
+        for y in range(height):
+            for x in range(width):
+                if grid[y][x]:
+                    lines.append(f"    Pixel_Draw({x}, {y});\n")
+        lines.append('}\n')
+        c_content = ''.join(lines)
+        
+        c_path = os.path.join(directory, 'my_pixel.c')
+        with open(c_path, 'w', encoding='utf-8', newline='') as f:
+            f.write(c_content)
+        
+        try:
+            import subprocess
+            subprocess.Popen(['notepad.exe', c_path])
+        except Exception:
+            pass
+        
+    def eventFilter(self, obj, event):
+        # 窗口级 Ctrl+滚轮 缩放：当主窗口处于活动状态时生效
+        if event.type() == QEvent.Type.Wheel and self.isActiveWindow():
+            if isinstance(event, QWheelEvent) and (event.modifiers() & Qt.KeyboardModifier.ControlModifier):
+                self.pixel_grid.wheelEvent(event)
+                return True
+        return super().eventFilter(obj, event)
+        
+    def create_toolbar(self):
+        # 创建绘图工具工具栏
+        toolbar = QToolBar("Tools")
+        toolbar.setMovable(False)
+        self.addToolBar(Qt.ToolBarArea.TopToolBarArea, toolbar)
+        toolbar.setContextMenuPolicy(Qt.ContextMenuPolicy.PreventContextMenu)
+        
+        tool_group = QActionGroup(self)
+        tool_group.setExclusive(True)
+        
+        pencil_action = QAction("点", self)
+        pencil_action.setCheckable(True)
+        pencil_action.setChecked(True)
+        pencil_action.triggered.connect(lambda: self.set_tool(PixelGridWidget.TOOL_PENCIL))
+        tool_group.addAction(pencil_action)
+        toolbar.addAction(pencil_action)
+        
+        line_action = QAction("直线", self)
+        line_action.setCheckable(True)
+        line_action.triggered.connect(lambda: self.set_tool(PixelGridWidget.TOOL_LINE))
+        tool_group.addAction(line_action)
+        toolbar.addAction(line_action)
+        
+        rect_action = QAction("矩形", self)
+        rect_action.setCheckable(True)
+        rect_action.triggered.connect(lambda: self.set_tool(PixelGridWidget.TOOL_RECTANGLE))
+        tool_group.addAction(rect_action)
+        toolbar.addAction(rect_action)
+        
+        circle_action = QAction("圆形", self)
+        circle_action.setCheckable(True)
+        circle_action.triggered.connect(lambda: self.set_tool(PixelGridWidget.TOOL_CIRCLE))
+        tool_group.addAction(circle_action)
+        toolbar.addAction(circle_action)
+        
+        triangle_action = QAction("三角形", self)
+        triangle_action.setCheckable(True)
+        triangle_action.triggered.connect(lambda: self.set_tool(PixelGridWidget.TOOL_TRIANGLE))
+        tool_group.addAction(triangle_action)
+        toolbar.addAction(triangle_action)
+
+        diamond_action = QAction("菱形", self)
+        diamond_action.setCheckable(True)
+        diamond_action.triggered.connect(lambda: self.set_tool(PixelGridWidget.TOOL_DIAMOND))
+        tool_group.addAction(diamond_action)
+        toolbar.addAction(diamond_action)
+
+        pentagon_action = QAction("五边形", self)
+        pentagon_action.setCheckable(True)
+        pentagon_action.triggered.connect(lambda: self.set_tool(PixelGridWidget.TOOL_PENTAGON))
+        tool_group.addAction(pentagon_action)
+        toolbar.addAction(pentagon_action)
+
+        hexagon_action = QAction("六边形", self)
+        hexagon_action.setCheckable(True)
+        hexagon_action.triggered.connect(lambda: self.set_tool(PixelGridWidget.TOOL_HEXAGON))
+        tool_group.addAction(hexagon_action)
+        toolbar.addAction(hexagon_action)
+
+        star_action = QAction("星形", self)
+        star_action.setCheckable(True)
+        star_action.triggered.connect(lambda: self.set_tool(PixelGridWidget.TOOL_STAR))
+        tool_group.addAction(star_action)
+        toolbar.addAction(star_action)
+        
+        toolbar.addSeparator()
+        spacer = QWidget()
+        spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        toolbar.addWidget(spacer)
+        
+        self.fill_checkbox = QCheckBox("填充")
+        self.fill_checkbox.setChecked(False)
+        self.fill_checkbox.toggled.connect(self.on_fill_toggled)
+        toolbar.addWidget(self.fill_checkbox)
+        
+        self.pencil_action = pencil_action
+        self.line_action = line_action
+        self.rect_action = rect_action
+        self.circle_action = circle_action
+        self.triangle_action = triangle_action
+        self.diamond_action = diamond_action
+        self.pentagon_action = pentagon_action
+        self.star_action = star_action
+        self.hexagon_action = hexagon_action
+        
+        self.shape_tool_actions = [self.rect_action, self.circle_action, self.triangle_action,
+                                   self.diamond_action, self.pentagon_action, self.star_action, self.hexagon_action]
+        
+    def set_tool(self, tool):
+        # 设置像素网格中的当前工具
+        self.pixel_grid.set_tool(tool)
+        
+    def on_fill_toggled(self, checked):
+        # 处理填充复选框切换
+        for tool in [PixelGridWidget.TOOL_RECTANGLE, PixelGridWidget.TOOL_CIRCLE, 
+                     PixelGridWidget.TOOL_TRIANGLE, PixelGridWidget.TOOL_DIAMOND,
+                     PixelGridWidget.TOOL_PENTAGON, PixelGridWidget.TOOL_STAR,
+                     PixelGridWidget.TOOL_HEXAGON]:
+            self.pixel_grid.set_fill_mode(tool, checked)
+            
+        self.pixel_grid.set_fill_mode(self.pixel_grid.current_tool, checked)
+        
+    def update_grid_size(self):
+        # 根据微调框值更新网格大小
+        width = self.width_spinbox.value()
+        height = self.height_spinbox.value()
+        self.pixel_grid.set_grid_size(width, height)
+        
+    def update_guideline_interval(self):
+        # 根据微调框值更新辅助线间隔
+        interval = self.guideline_spinbox.value()
+        self.pixel_grid.set_guideline_interval(interval)
+        
+    def clear_grid(self):
+        # 清除像素网格
+        self.pixel_grid.clear_grid()
+
+
+def main():
+    app = QApplication(sys.argv)
+    window = MainWindow()
+    window.show()
+    sys.exit(app.exec())
+
+
+if __name__ == "__main__":
+    main()
