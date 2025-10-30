@@ -1,46 +1,35 @@
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+
 """
 像素绘制工具
+这是一个基于PyQt6的像素绘制工具，支持多种绘图功能，包括点、线、矩形、圆形、三角形、菱形、五边形、六边形、星形等基本图形的绘制，
+以及图片导入功能。用户可以设置画布大小，生成对应的C语言代码。
+
+依赖库：
+- PyQt6: 用于图形界面
+  安装命令: pip install PyQt6
+
 作者: MistyRainDreamX
-创建日期: 2025-10-23
-更新日期: 2025-10-26
-开源地址：https://github.com/2549850807/Pixel-Drawing
-描述: 这是一个基于 PyQt6 的像素绘制工具，支持多种绘图功能和导出为 C 代码
-
-依赖:
-- Python 3.6+
-- PyQt6
-
-安装依赖:
-pip install PyQt6
-
-功能:
-- 多种绘图工具（点、直线、矩形、圆形、三角形、菱形、五边形、六边形、星形）
-- 可调节画布大小（1-999 像素）
-- 缩放功能（Ctrl + 鼠标滚轮）
-- 辅助线
-- 撤销功能（Ctrl + Z）
-- 清屏功能（Delete 键）
-- 导出为 C 语言代码
+Github: https://github.com/2549850807/Pixel-Drawing
+更新日期: 2025-10-31
 """
 
+# 以下导入需要安装PyQt6库
+# pip install PyQt6
 import sys
 import os
 import math
 import subprocess
-# PyQt6 依赖，需要先安装: pip install PyQt6
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QLabel, QSpinBox, QPushButton,
-    QVBoxLayout, QHBoxLayout, QToolBar, QColorDialog, QSizePolicy, QScrollArea, QToolButton, QMenu, QFileDialog, QCheckBox
+    QVBoxLayout, QHBoxLayout, QToolBar, QColorDialog, QSizePolicy, QScrollArea, QToolButton, QMenu, QFileDialog, QCheckBox, QMessageBox, QProgressDialog
 )
-# PyQt6 核心模块
 from PyQt6.QtCore import Qt, QRect, QPoint, QEvent
-# PyQt6 GUI 模块
 from PyQt6.QtGui import QPainter, QColor, QMouseEvent, QWheelEvent, QIcon, QPixmap, QAction, QActionGroup, QKeySequence, QShortcut
 
 
 class PixelGridWidget(QWidget):
-    # 定义工具常量
     TOOL_PENCIL = 1
     TOOL_LINE = 2
     TOOL_RECTANGLE = 3
@@ -50,7 +39,7 @@ class PixelGridWidget(QWidget):
     TOOL_PENTAGON = 7
     TOOL_HEXAGON = 8
     TOOL_STAR = 9
-    
+    TOOL_IMAGE = 10
     
     def __init__(self, width=32, height=32, pixel_size=20):
         super().__init__()
@@ -76,7 +65,12 @@ class PixelGridWidget(QWidget):
         self.preview_end = None
         self.guideline_interval = 1
         
-        # 撤销历史栈
+        self.image_data = None
+        self.image_position = None
+        self.image_scale = 1.0
+        self.is_placing_image = False
+        self.original_image_size = None
+        
         self.history = []
         
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -89,22 +83,32 @@ class PixelGridWidget(QWidget):
         self.update_grid_size()
         
     def set_grid_size(self, width, height):
-        # 设置新的网格大小
         self.width = width
         self.height = height
         self.grid = [[False for _ in range(width)] for _ in range(height)]
         self.update_grid_size()
         
     def update_grid_size(self):
-        # 根据网格尺寸和像素大小更新控件大小
-        self.setFixedSize(
-            int(self.width * self.pixel_size * self.zoom_factor),
-            int(self.height * self.pixel_size * self.zoom_factor)
-        )
+        target_width = int(self.width * self.pixel_size * self.zoom_factor)
+        target_height = int(self.height * self.pixel_size * self.zoom_factor)
+        
+        if self.parent() and hasattr(self.parent(), 'viewport'):
+            viewport = self.parent().viewport()
+            viewport_width = viewport.width()
+            viewport_height = viewport.height()
+            
+            min_zoom_x = viewport_width / (self.width * self.pixel_size)
+            min_zoom_y = viewport_height / (self.height * self.pixel_size)
+            min_zoom = max(min_zoom_x, min_zoom_y, 0.1)
+            
+            if self.zoom_factor < min_zoom:
+                target_width = max(target_width, viewport_width)
+                target_height = max(target_height, viewport_height)
+        
+        self.setFixedSize(target_width, target_height)
         self.update()
         
     def paintEvent(self, event):
-        # 高性能绘制：一次性填充背景，按行绘制白色像素
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, False)
@@ -112,10 +116,8 @@ class PixelGridWidget(QWidget):
         actual_pixel_size = self.pixel_size * self.zoom_factor
         grid_to_draw = self.temp_grid if self.temp_grid is not None else self.grid
 
-        # 填充整个控件背景为黑色
         painter.fillRect(self.rect(), Qt.GlobalColor.black)
 
-        # 根据辅助线间隔绘制网格线
         painter.setPen(QColor(80, 80, 80))
         for x in range(0, self.width + 1, self.guideline_interval):
             x_pos = int(round(x * actual_pixel_size))
@@ -124,7 +126,6 @@ class PixelGridWidget(QWidget):
             y_pos = int(round(y * actual_pixel_size))
             painter.drawLine(0, y_pos, int(round(self.width * actual_pixel_size)), y_pos)
 
-        # 只绘制白色像素，按行合并为水平线段
         w = self.width
         h = self.height
         ps = actual_pixel_size
@@ -140,7 +141,6 @@ class PixelGridWidget(QWidget):
                 while x < w and row[x]:
                     x += 1
                 end = x - 1
-                # 为整个白色线段绘制一个矩形，使用四舍五入的边界避免行间间隙
                 x0 = int(round(start * ps))
                 x1 = int(round((end + 1) * ps))
                 y0 = int(round(y * ps))
@@ -149,16 +149,85 @@ class PixelGridWidget(QWidget):
                     QRect(x0, y0, max(1, x1 - x0), max(1, y1 - y0)),
                     Qt.GlobalColor.white
                 )
-                
-    def _get_pixel_coordinates(self, pos):
-        # 将鼠标位置转换为像素坐标
+        
+        if self.current_tool == self.TOOL_IMAGE and self.is_placing_image and self.image_data and self.image_position:
+            self.draw_image_preview(painter)
+    
+    def draw_image_preview(self, painter):
+        if not self.image_data or not self.image_position:
+            return
+            
+        start_x, start_y = self.image_position
+        img_height = len(self.image_data)
+        img_width = len(self.image_data[0]) if img_height > 0 else 0
+        
+        scaled_width = int(img_width * self.image_scale)
+        scaled_height = int(img_height * self.image_scale)
+        
         actual_pixel_size = self.pixel_size * self.zoom_factor
+        
+        max_preview_pixels = 20000
+        total_pixels = scaled_width * scaled_height
+        sample_factor = 1
+        
+        if total_pixels > max_preview_pixels:
+            sample_factor = int(math.sqrt(total_pixels / max_preview_pixels))
+            sample_factor = max(1, sample_factor)
+        
+        if img_width <= 200 and img_height <= 200:
+            sample_factor = 1
+        elif img_width <= 300 and img_height <= 300:
+            sample_factor = max(1, sample_factor // 2)
+        
+        for y in range(0, scaled_height, sample_factor):
+            for x in range(0, scaled_width, sample_factor):
+                orig_x = int(x / self.image_scale)
+                orig_y = int(y / self.image_scale)
+                
+                if (orig_x < img_width and orig_y < img_height and 
+                    0 <= start_x + x < self.width and 0 <= start_y + y < self.height):
+                    if self.image_data[orig_y][orig_x]:
+                        x_pos = int(round((start_x + x) * actual_pixel_size))
+                        y_pos = int(round((start_y + y) * actual_pixel_size))
+                        rect_width = max(1, int(actual_pixel_size * sample_factor))
+                        rect_height = max(1, int(actual_pixel_size * sample_factor))
+                        
+                        if rect_width > 4 and rect_height > 4:
+                            painter.fillRect(
+                                QRect(x_pos, y_pos, rect_width, rect_height),
+                                QColor(200, 200, 200, 90)
+                            )
+                            painter.setPen(QColor(220, 220, 220, 130))
+                            for gx in range(0, rect_width, max(2, rect_width // 3)):
+                                painter.drawLine(x_pos + gx, y_pos, x_pos + gx, y_pos + rect_height)
+                            for gy in range(0, rect_height, max(2, rect_height // 3)):
+                                painter.drawLine(x_pos, y_pos + gy, x_pos + rect_width, y_pos + gy)
+                        else:
+                            painter.fillRect(
+                                QRect(x_pos, y_pos, rect_width, rect_height),
+                                QColor(200, 200, 200, 128)
+                            )
+        
+        painter.setPen(QColor(100, 150, 255, 220))
+        x_pos = int(round(start_x * actual_pixel_size))
+        y_pos = int(round(start_y * actual_pixel_size))
+        width = int(round(scaled_width * actual_pixel_size))
+        height = int(round(scaled_height * actual_pixel_size))
+        painter.drawRect(x_pos, y_pos, width, height)
+        
+        corner_size = min(12, max(4, width // 15, height // 15))
+        painter.setBrush(QColor(100, 150, 255, 220))
+        painter.drawRect(x_pos, y_pos, corner_size, corner_size)
+    
+    def _get_pixel_coordinates(self, pos):
+        actual_pixel_size = self.pixel_size * self.zoom_factor
+        
         x = int(pos.x() / actual_pixel_size)
         y = int(pos.y() / actual_pixel_size)
+        
         return x, y
     
     def _draw_line(self, grid, start_pos, end_pos, state):
-        # 使用 Bresenham 算法在两点间绘制直线
         x0, y0 = start_pos
         x1, y1 = end_pos
         
@@ -186,23 +255,18 @@ class PixelGridWidget(QWidget):
                 y += sy
                 
     def _draw_rectangle(self, grid, start_pos, end_pos, state, filled=False):
-        # 在两点间绘制矩形
         x0, y0 = start_pos
         x1, y1 = end_pos
         
-        # 标准化坐标
         min_x, max_x = min(x0, x1), max(x0, x1)
         min_y, max_y = min(y0, y1), max(y0, y1)
         
         if filled:
-            # 绘制填充矩形
             for y in range(min_y, max_y + 1):
                 for x in range(min_x, max_x + 1):
                     if 0 <= x < self.width and 0 <= y < self.height:
                         grid[y][x] = state
         else:
-            # 只绘制轮廓
-            # 顶部和底部边
             for x in range(min_x, max_x + 1):
                 if 0 <= x < self.width:
                     if 0 <= min_y < self.height:
@@ -210,7 +274,6 @@ class PixelGridWidget(QWidget):
                     if 0 <= max_y < self.height:
                         grid[max_y][x] = state
                         
-            # 左边和右边（不包括已绘制的角）
             for y in range(min_y + 1, max_y):
                 if 0 <= y < self.height:
                     if 0 <= min_x < self.width:
@@ -219,13 +282,11 @@ class PixelGridWidget(QWidget):
                         grid[y][max_x] = state
     
     def _draw_circle(self, grid, center, radius, state, filled=False):
-        # 绘制圆形
         cx, cy = center
         if radius <= 0:
             return
 
         if filled:
-            # 填充区域：水平扫描线填充
             for y in range(-radius, radius + 1):
                 rem = radius * radius - y * y
                 if rem < 0:
@@ -236,7 +297,6 @@ class PixelGridWidget(QWidget):
                     if 0 <= px < self.width and 0 <= py < self.height:
                         grid[py][px] = state
 
-        # 轮廓：参数采样并连接连续点避免稀疏角
         steps = max(32, int(8 * radius))
         last = None
         for i in range(steps + 1):
@@ -251,12 +311,10 @@ class PixelGridWidget(QWidget):
                 last = (px, py)
     
     def _draw_triangle(self, grid, points, state, filled=False):
-        # 绘制三角形
         if len(points) != 3:
             return
             
         if filled:
-            # 扫描线填充三角形
             x1, y1 = points[0]
             x2, y2 = points[1]
             x3, y3 = points[2]
@@ -278,17 +336,14 @@ class PixelGridWidget(QWidget):
                         grid[y][x] = state
 
         else:
-            # 绘制轮廓
             self._draw_line(grid, points[0], points[1], state)
             self._draw_line(grid, points[1], points[2], state)
             self._draw_line(grid, points[2], points[0], state)
     
     def _draw_polygon(self, grid, points, state, filled=False):
-        # 绘制多边形
         if not points or len(points) < 3:
             return
         if filled:
-            # 扫描线填充：计算每行的交点
             min_y = max(0, min(p[1] for p in points))
             max_y = min(self.height - 1, max(p[1] for p in points))
             n = len(points)
@@ -312,17 +367,14 @@ class PixelGridWidget(QWidget):
                     x_end = min(self.width - 1, int(math.floor(max(left, right))))
                     for x in range(x_start, x_end + 1):
                         grid[y][x] = state
-            # 确保顶点本身被设置
             for vx, vy in points:
                 if 0 <= vx < self.width and 0 <= vy < self.height:
                     grid[vy][vx] = state
         else:
-            # 绘制轮廓：连接连续顶点
             for i in range(len(points)):
                 self._draw_line(grid, points[i], points[(i + 1) % len(points)], state)
 
     def _fill_flat_triangle(self, grid, p1, p2, p3, state):
-        # 填充平底三角形的辅助方法
         if p2[0] > p3[0]:
             p2, p3 = p3, p2
             
@@ -350,33 +402,496 @@ class PixelGridWidget(QWidget):
             curx2 += invslope2
     
     def _clear_temp_grid(self):
-        # 清除临时网格
         self.temp_grid = None
         self.start_pos = None
         
     def set_tool(self, tool):
-        # 设置当前绘图工具
         self.current_tool = tool
         self._clear_temp_grid()
         
+        if tool != self.TOOL_IMAGE and self.is_placing_image:
+            self.cancel_image_placement()
+    
+    def import_image(self):
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "选择图片", "", "Images (*.png *.jpg *.jpeg *.bmp *.gif)"
+        )
+        
+        if not file_path:
+            return False
+            
+        reply = QMessageBox.question(
+            self, 
+            "颜色反转", 
+            "是否对导入的图片进行颜色反转？", 
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, 
+            QMessageBox.StandardButton.No
+        )
+        
+        invert_colors = (reply == QMessageBox.StandardButton.Yes)
+            
+        pixmap = QPixmap(file_path)
+        if pixmap.isNull():
+            QMessageBox.warning(self, "错误", "无法加载图片")
+            return False
+            
+        self.original_image_size = pixmap.size()
+        
+        max_width = min(self.width * 0.85, 500)
+        max_height = min(self.height * 0.85, 500)
+        
+        pixmap = pixmap.scaled(
+            int(max_width), int(max_height),
+            Qt.AspectRatioMode.KeepAspectRatio, 
+            Qt.TransformationMode.SmoothTransformation
+        )
+        
+        image = pixmap.toImage()
+        
+        if invert_colors:
+            for y in range(image.height()):
+                for x in range(image.width()):
+                    color = image.pixelColor(x, y)
+                    inverted_color = QColor(255 - color.red(), 255 - color.green(), 255 - color.blue())
+                    image.setPixelColor(x, y, inverted_color)
+        
+        width, height = image.width(), image.height()
+        
+        progress = QProgressDialog("正在处理图片...", "取消", 0, 5, self)
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.setWindowTitle("图片处理进度")
+        progress.setMinimumDuration(0)
+        progress.setValue(0)
+        
+        progress.setLabelText("正在分析图片亮度...")
+        progress.setValue(1)
+        QApplication.processEvents()
+        
+        if progress.wasCanceled():
+            return False
+            
+        brightness_map = []
+        for y in range(height):
+            row = []
+            for x in range(width):
+                color = image.pixelColor(x, y)
+                brightness = (color.red() * 0.299 + color.green() * 0.587 + color.blue() * 0.114)
+                row.append(brightness)
+            brightness_map.append(row)
+        
+        progress.setLabelText("正在增强图片对比度...")
+        progress.setValue(2)
+        QApplication.processEvents()
+        
+        if progress.wasCanceled():
+            return False
+            
+        enhanced_brightness_map = []
+        
+        scales = [1, 2, 3, 5, 7]
+        scale_weights = [0.3, 0.25, 0.2, 0.15, 0.1]
+        
+        for y in range(height):
+            enhanced_row = []
+            for x in range(width):
+                original_brightness = brightness_map[y][x]
+                
+                enhanced_value = 0
+                total_weight = 0
+                
+                for i, scale in enumerate(scales):
+                    local_sum = 0
+                    local_count = 0
+                    
+                    for ky in range(max(0, y - scale), min(height, y + scale + 1)):
+                        for kx in range(max(0, x - scale), min(width, x + scale + 1)):
+                            local_sum += brightness_map[ky][kx]
+                            local_count += 1
+                    
+                    if local_count > 0:
+                        local_avg = local_sum / local_count
+                        scale_enhanced = original_brightness + (original_brightness - local_avg) * 0.8
+                        enhanced_value += scale_enhanced * scale_weights[i]
+                        total_weight += scale_weights[i]
+                
+                if total_weight > 0:
+                    enhanced_brightness = enhanced_value / total_weight
+                else:
+                    enhanced_brightness = original_brightness
+                    
+                enhanced_row.append(enhanced_brightness)
+                
+            enhanced_brightness_map.append(enhanced_row)
+        
+        progress.setLabelText("正在计算图片统计信息...")
+        progress.setValue(3)
+        QApplication.processEvents()
+        
+        if progress.wasCanceled():
+            return False
+            
+        total_brightness = 0
+        brightness_values = []
+        
+        for y in range(height):
+            for x in range(width):
+                brightness = enhanced_brightness_map[y][x]
+                total_brightness += brightness
+                brightness_values.append(brightness)
+                
+        pixel_count = width * height
+        avg_brightness = total_brightness / pixel_count if pixel_count > 0 else 128
+        
+        variance = 0
+        for brightness in brightness_values:
+            variance += (brightness - avg_brightness) ** 2
+        std_dev = (variance / pixel_count) ** 0.5 if pixel_count > 0 else 0
+        
+        progress.setLabelText("正在转换为黑白图像...")
+        progress.setValue(4)
+        QApplication.processEvents()
+        
+        if progress.wasCanceled():
+            return False
+            
+        bw_data = [[False for _ in range(width)] for _ in range(height)]
+        
+        for y in range(height):
+            for x in range(width):
+                enhanced_brightness = enhanced_brightness_map[y][x]
+                
+                local_threshold = avg_brightness
+                
+                if std_dev > 50:
+                    local_threshold = avg_brightness * 0.6 + enhanced_brightness * 0.4
+                elif std_dev > 35:
+                    local_threshold = avg_brightness * 0.65 + enhanced_brightness * 0.35
+                elif std_dev > 25:
+                    local_threshold = avg_brightness * 0.7 + enhanced_brightness * 0.3
+                elif std_dev > 15:
+                    local_threshold = avg_brightness * 0.75 + enhanced_brightness * 0.25
+                else:
+                    local_threshold = avg_brightness * 0.65 + enhanced_brightness * 0.35
+                
+                edge_strength = 0
+                if 2 < y < height - 3 and 2 < x < width - 3:
+                    grad_x = (
+                        (enhanced_brightness_map[y-1][x+1] - enhanced_brightness_map[y-1][x-1]) +
+                        2 * (enhanced_brightness_map[y][x+1] - enhanced_brightness_map[y][x-1]) +
+                        (enhanced_brightness_map[y+1][x+1] - enhanced_brightness_map[y+1][x-1])
+                    )
+                    grad_y = (
+                        (enhanced_brightness_map[y+1][x-1] - enhanced_brightness_map[y-1][x-1]) +
+                        2 * (enhanced_brightness_map[y+1][x] - enhanced_brightness_map[y-1][x]) +
+                        (enhanced_brightness_map[y+1][x+1] - enhanced_brightness_map[y-1][x+1])
+                    )
+                    gradient = (grad_x ** 2 + grad_y ** 2) ** 0.5
+                    edge_strength = gradient / 8
+                    
+                    if edge_strength > std_dev * 0.25:
+                        local_threshold *= (0.8 + 0.2 * (min(edge_strength / (std_dev + 1), 1)))
+                
+                texture_factor = 1.0
+                if 3 < y < height - 4 and 3 < x < width - 4:
+                    local_variance = 0
+                    local_mean = 0
+                    count = 0
+                    
+                    for ky in range(y-3, y+4):
+                        for kx in range(x-3, x+4):
+                            local_mean += enhanced_brightness_map[ky][kx]
+                            count += 1
+                    
+                    if count > 0:
+                        local_mean /= count
+                        
+                        for ky in range(y-3, y+4):
+                            for kx in range(x-3, x+4):
+                                diff = enhanced_brightness_map[ky][kx] - local_mean
+                                local_variance += diff * diff
+                        
+                        local_variance = (local_variance / count) ** 0.5
+                        
+                        if local_variance > std_dev * 0.3:
+                            texture_factor = 0.85
+                
+                adjusted_threshold = local_threshold * texture_factor
+                
+                if enhanced_brightness > adjusted_threshold:
+                    bw_data[y][x] = True
+                else:
+                    bw_data[y][x] = False
+        
+        progress.setLabelText("正在完成处理...")
+        progress.setValue(5)
+        QApplication.processEvents()
+        
+        self.image_data = bw_data
+        
+        self.is_placing_image = True
+        self.image_scale = 1.0
+        
+        progress.close()
+        
+        return True
+    
+    def pixmap_to_bw_data_high_precision(self, pixmap):
+        img = pixmap.toImage()
+        width, height = img.width(), img.height()
+        
+        progress = QProgressDialog("正在处理图片数据...", "取消", 0, 4, self)
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.setWindowTitle("图片处理进度")
+        progress.setMinimumDuration(0)
+        progress.setValue(0)
+        
+        progress.setLabelText("正在分析图片亮度...")
+        progress.setValue(1)
+        QApplication.processEvents()
+        
+        if progress.wasCanceled():
+            progress.close()
+            return [[False for _ in range(width)] for _ in range(height)]
+            
+        brightness_map = []
+        for y in range(height):
+            row = []
+            for x in range(width):
+                color = img.pixelColor(x, y)
+                brightness = (color.red() * 0.299 + color.green() * 0.587 + color.blue() * 0.114)
+                row.append(brightness)
+            brightness_map.append(row)
+        
+        progress.setLabelText("正在增强图片对比度...")
+        progress.setValue(2)
+        QApplication.processEvents()
+        
+        if progress.wasCanceled():
+            progress.close()
+            return [[False for _ in range(width)] for _ in range(height)]
+            
+        enhanced_brightness_map = []
+        
+        scales = [1, 2, 3, 5, 7]
+        scale_weights = [0.3, 0.25, 0.2, 0.15, 0.1]
+        
+        for y in range(height):
+            enhanced_row = []
+            for x in range(width):
+                original_brightness = brightness_map[y][x]
+                
+                enhanced_value = 0
+                total_weight = 0
+                
+                for i, scale in enumerate(scales):
+                    local_sum = 0
+                    local_count = 0
+                    
+                    for ky in range(max(0, y - scale), min(height, y + scale + 1)):
+                        for kx in range(max(0, x - scale), min(width, x + scale + 1)):
+                            local_sum += brightness_map[ky][kx]
+                            local_count += 1
+                    
+                    if local_count > 0:
+                        local_avg = local_sum / local_count
+                        scale_enhanced = original_brightness + (original_brightness - local_avg) * 0.8
+                        enhanced_value += scale_enhanced * scale_weights[i]
+                        total_weight += scale_weights[i]
+                
+                if total_weight > 0:
+                    enhanced_brightness = enhanced_value / total_weight
+                else:
+                    enhanced_brightness = original_brightness
+                    
+                enhanced_row.append(enhanced_brightness)
+                
+            enhanced_brightness_map.append(enhanced_row)
+        
+        progress.setLabelText("正在计算图片统计信息...")
+        progress.setValue(3)
+        QApplication.processEvents()
+        
+        if progress.wasCanceled():
+            progress.close()
+            return [[False for _ in range(width)] for _ in range(height)]
+            
+        total_brightness = 0
+        brightness_values = []
+        
+        for y in range(height):
+            for x in range(width):
+                brightness = enhanced_brightness_map[y][x]
+                total_brightness += brightness
+                brightness_values.append(brightness)
+                
+        pixel_count = width * height
+        avg_brightness = total_brightness / pixel_count if pixel_count > 0 else 128
+        
+        variance = 0
+        for brightness in brightness_values:
+            variance += (brightness - avg_brightness) ** 2
+        std_dev = (variance / pixel_count) ** 0.5 if pixel_count > 0 else 0
+        
+        progress.setLabelText("正在转换为黑白图像...")
+        progress.setValue(4)
+        QApplication.processEvents()
+        
+        if progress.wasCanceled():
+            progress.close()
+            return [[False for _ in range(width)] for _ in range(height)]
+            
+        bw_data = [[False for _ in range(width)] for _ in range(height)]
+        
+        for y in range(height):
+            for x in range(width):
+                enhanced_brightness = enhanced_brightness_map[y][x]
+                
+                local_threshold = avg_brightness
+                
+                if std_dev > 50:
+                    local_threshold = avg_brightness * 0.6 + enhanced_brightness * 0.4
+                elif std_dev > 35:
+                    local_threshold = avg_brightness * 0.65 + enhanced_brightness * 0.35
+                elif std_dev > 25:
+                    local_threshold = avg_brightness * 0.7 + enhanced_brightness * 0.3
+                elif std_dev > 15:
+                    local_threshold = avg_brightness * 0.75 + enhanced_brightness * 0.25
+                else:
+                    local_threshold = avg_brightness * 0.65 + enhanced_brightness * 0.35
+                
+                edge_strength = 0
+                if 2 < y < height - 3 and 2 < x < width - 3:
+                    grad_x = (
+                        (enhanced_brightness_map[y-1][x+1] - enhanced_brightness_map[y-1][x-1]) +
+                        2 * (enhanced_brightness_map[y][x+1] - enhanced_brightness_map[y][x-1]) +
+                        (enhanced_brightness_map[y+1][x+1] - enhanced_brightness_map[y+1][x-1])
+                    )
+                    grad_y = (
+                        (enhanced_brightness_map[y+1][x-1] - enhanced_brightness_map[y-1][x-1]) +
+                        2 * (enhanced_brightness_map[y+1][x] - enhanced_brightness_map[y-1][x]) +
+                        (enhanced_brightness_map[y+1][x+1] - enhanced_brightness_map[y-1][x+1])
+                    )
+                    gradient = (grad_x ** 2 + grad_y ** 2) ** 0.5
+                    edge_strength = gradient / 8
+                    
+                    if edge_strength > std_dev * 0.25:
+                        local_threshold *= (0.8 + 0.2 * (min(edge_strength / (std_dev + 1), 1)))
+                
+                texture_factor = 1.0
+                if 3 < y < height - 4 and 3 < x < width - 4:
+                    local_variance = 0
+                    local_mean = 0
+                    count = 0
+                    
+                    for ky in range(y-3, y+4):
+                        for kx in range(x-3, x+4):
+                            local_mean += enhanced_brightness_map[ky][kx]
+                            count += 1
+                    
+                    if count > 0:
+                        local_mean /= count
+                        
+                        for ky in range(y-3, y+4):
+                            for kx in range(x-3, x+4):
+                                diff = enhanced_brightness_map[ky][kx] - local_mean
+                                local_variance += diff * diff
+                        
+                        local_variance = (local_variance / count) ** 0.5
+                        
+                        if local_variance > std_dev * 0.3:
+                            texture_factor = 0.85
+                
+                adjusted_threshold = local_threshold * texture_factor
+                
+                if enhanced_brightness > adjusted_threshold:
+                    bw_data[y][x] = True
+                else:
+                    bw_data[y][x] = False
+                    
+        progress.close()
+                    
+        return bw_data
+    
+    def pixmap_to_bw_data(self, pixmap):
+        return self.pixmap_to_bw_data_high_precision(pixmap)
+    
+    def adjust_image_scale(self):
+        if not self.image_data or not self.original_image_size:
+            return
+            
+        img_width = len(self.image_data[0]) if self.image_data else 0
+        img_height = len(self.image_data) if self.image_data else 0
+        
+        max_width = self.width * 0.8
+        max_height = self.height * 0.8
+        
+        if img_width > max_width or img_height > max_height:
+            scale_x = max_width / img_width
+            scale_y = max_height / img_height
+            self.image_scale = min(scale_x, scale_y)
+    
+    def cancel_image_placement(self):
+        self.is_placing_image = False
+        self.image_data = None
+        self.image_position = None
+        self.image_scale = 1.0
+        self.original_image_size = None
+        self.update()
+        
+        mainWindow = self.window()
+        if hasattr(mainWindow, 'switch_to_pencil_tool'):
+            mainWindow.switch_to_pencil_tool()
+    
+    def place_image_on_grid(self):
+        if not self.image_data or not self.image_position:
+            return
+            
+        start_x, start_y = self.image_position
+        img_height = len(self.image_data)
+        img_width = len(self.image_data[0]) if img_height > 0 else 0
+        
+        scaled_width = int(img_width * self.image_scale)
+        scaled_height = int(img_height * self.image_scale)
+        
+        for y in range(scaled_height):
+            for x in range(scaled_width):
+                orig_x = int(x / self.image_scale)
+                orig_y = int(y / self.image_scale)
+                
+                if (orig_x < img_width and orig_y < img_height and 
+                    0 <= start_x + x < self.width and 0 <= start_y + y < self.height):
+                    self.grid[start_y + y][start_x + x] = self.image_data[orig_y][orig_x]
+        
+        mainWindow = self.window()
+        if hasattr(mainWindow, 'switch_to_pencil_tool'):
+            mainWindow.switch_to_pencil_tool()
+    
     def set_fill_mode(self, tool, filled):
-        # 设置特定形状工具是否填充
         if tool in self.fill_modes:
             self.fill_modes[tool] = filled
         
     def _snapshot(self):
-        # 将当前网格的深拷贝推入历史记录
         self.history.append([row[:] for row in self.grid])
 
     def _clamp_to_bounds(self, x, y):
-        # 将坐标限制在有效网格范围内
         x = max(0, min(self.width - 1, x))
         y = max(0, min(self.height - 1, y))
         return x, y
 
     def mousePressEvent(self, event: QMouseEvent):
-        # 处理鼠标点击以切换像素
+        if self.current_tool == self.TOOL_IMAGE and self.is_placing_image:
+            if event.button() == Qt.MouseButton.LeftButton:
+                if self.image_data and self.image_position:
+                    self._snapshot()
+                    self.place_image_on_grid()
+                    self.cancel_image_placement()
+                return
+            elif event.button() == Qt.MouseButton.RightButton:
+                self.cancel_image_placement()
+                return
+                
         x, y = self._get_pixel_coordinates(event.position())
+        
         x, y = self._clamp_to_bounds(x, y)
             
         if event.button() == Qt.MouseButton.LeftButton:
@@ -387,24 +902,30 @@ class PixelGridWidget(QWidget):
             return
             
         if self.current_tool == self.TOOL_PENCIL:
-            # 铅笔工具 - 绘制单个像素并设置插值起点
             self._snapshot()
             self.grid[y][x] = self.drawing_state
             self.last_pos = (x, y)
             self.update()
         else:
-            # 形状工具 - 记录起始位置
             self._snapshot()
             self.start_pos = (x, y)
             self.temp_grid = [row[:] for row in self.grid]
             
     def mouseMoveEvent(self, event: QMouseEvent):
-        # 处理鼠标移动以连续绘制
+        if self.current_tool == self.TOOL_IMAGE and self.is_placing_image:
+            if self.image_data:
+                x, y = self._get_pixel_coordinates(event.position())
+                
+                if self.image_position is None or abs(self.image_position[0] - x) > 0 or abs(self.image_position[1] - y) > 0:
+                    self.image_position = (x, y)
+                    self.update()
+            return
+            
         x, y = self._get_pixel_coordinates(event.position())
+        
         x, y = self._clamp_to_bounds(x, y)
             
         if self.current_tool == self.TOOL_PENCIL:
-            # 铅笔工具 - 按住按钮时连续绘制并用直线插值
             if self.drawing_state is not None:
                 if self.last_pos is not None:
                     self._draw_line(self.grid, self.last_pos, (x, y), self.drawing_state)
@@ -413,10 +934,8 @@ class PixelGridWidget(QWidget):
                 self.last_pos = (x, y)
                 self.update()
         elif self.start_pos is not None and self.temp_grid is not None:
-            # 形状工具 - 更新预览
             self.temp_grid = [row[:] for row in self.grid]
             
-            # 绘制形状预览
             if self.current_tool == self.TOOL_LINE:
                 self._draw_line(self.temp_grid, self.start_pos, (x, y), self.drawing_state)
             elif self.current_tool == self.TOOL_RECTANGLE:
@@ -485,19 +1004,20 @@ class PixelGridWidget(QWidget):
             self.update()
                 
     def mouseReleaseEvent(self, event: QMouseEvent):
-        # 处理鼠标释放以完成绘制
+        if self.current_tool == self.TOOL_IMAGE and self.is_placing_image:
+            return
+            
         if self.drawing_state is None:
             return
             
         x, y = self._get_pixel_coordinates(event.position())
+        
         x, y = self._clamp_to_bounds(x, y)
             
         if self.current_tool == self.TOOL_PENCIL:
-            # 铅笔工具 - 完成绘制
             self.grid[y][x] = self.drawing_state
             self.last_pos = None
         elif self.start_pos is not None:
-            # 形状工具 - 完成绘制
             if self.current_tool == self.TOOL_LINE:
                 self._draw_line(self.grid, self.start_pos, (x, y), self.drawing_state)
             elif self.current_tool == self.TOOL_RECTANGLE:
@@ -568,7 +1088,20 @@ class PixelGridWidget(QWidget):
         self.update()
             
     def wheelEvent(self, event: QWheelEvent):
-        # 处理 Ctrl+滚轮 缩放
+        if (self.current_tool == self.TOOL_IMAGE and self.is_placing_image and 
+            self.image_data and not (event.modifiers() & Qt.KeyboardModifier.ControlModifier)):
+            delta = event.angleDelta().y()
+            
+            if delta > 0:
+                self.image_scale *= 1.1
+            elif delta < 0:
+                self.image_scale /= 1.1
+                
+            self.image_scale = max(0.1, min(self.image_scale, 5.0))
+            
+            self.update()
+            return
+            
         if event.modifiers() == Qt.KeyboardModifier.ControlModifier:
             delta = event.angleDelta().y()
             
@@ -577,7 +1110,23 @@ class PixelGridWidget(QWidget):
             elif delta < 0:
                 self.zoom_factor /= 1.1
                 
-            self.zoom_factor = max(0.1, min(self.zoom_factor, 10.0))
+            if self.parent() and hasattr(self.parent(), 'viewport'):
+                viewport = self.parent().viewport()
+                viewport_width = viewport.width()
+                viewport_height = viewport.height()
+                
+                canvas_width = self.width * self.pixel_size * self.zoom_factor
+                canvas_height = self.height * self.pixel_size * self.zoom_factor
+                
+                min_zoom_x = viewport_width / (self.width * self.pixel_size)
+                min_zoom_y = viewport_height / (self.height * self.pixel_size)
+                min_zoom = max(min_zoom_x, min_zoom_y, 0.05)
+                
+                max_zoom = max(20.0, min_zoom * 50)
+                
+                self.zoom_factor = max(min_zoom, min(self.zoom_factor, max_zoom))
+            else:
+                self.zoom_factor = max(0.05, min(self.zoom_factor, 20.0))
             
             self.update_grid_size()
             self.update()
@@ -585,14 +1134,12 @@ class PixelGridWidget(QWidget):
             super().wheelEvent(event)
             
     def clear_grid(self):
-        # 清除整个网格
         if hasattr(self, 'history'):
             self.history.append([row[:] for row in self.grid])
         self.grid = [[False for _ in range(self.width)] for _ in range(self.height)]
         self.update()
 
     def set_guideline_interval(self, interval):
-        # 设置辅助线间隔
         self.guideline_interval = interval
         self.update()
 
@@ -679,12 +1226,10 @@ class MainWindow(QMainWindow):
             self.pixel_grid.update()
         
     def create_pixel_files(self):
-        # 让用户选择保存文件的目录
         directory = QFileDialog.getExistingDirectory(self, "Select Output Directory")
         if not directory:
             return
         
-        # 生成 C 代码内容
         lines = []
         lines.append('void Pixel_Image_Draw(void);\n\n')
         lines.append('#define Pixel_Draw(x, y) my_pixel_draw(x, y)\n\n')
@@ -711,7 +1256,6 @@ class MainWindow(QMainWindow):
             pass
         
     def eventFilter(self, obj, event):
-        # 窗口级 Ctrl+滚轮 缩放：当主窗口处于活动状态时生效
         if event.type() == QEvent.Type.Wheel and self.isActiveWindow():
             if isinstance(event, QWheelEvent) and (event.modifiers() & Qt.KeyboardModifier.ControlModifier):
                 self.pixel_grid.wheelEvent(event)
@@ -719,7 +1263,6 @@ class MainWindow(QMainWindow):
         return super().eventFilter(obj, event)
         
     def create_toolbar(self):
-        # 创建绘图工具工具栏
         toolbar = QToolBar("Tools")
         toolbar.setMovable(False)
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, toolbar)
@@ -783,6 +1326,11 @@ class MainWindow(QMainWindow):
         tool_group.addAction(star_action)
         toolbar.addAction(star_action)
         
+        image_action = QAction("图片", self)
+        image_action.setCheckable(True)
+        image_action.triggered.connect(self.import_image)
+        toolbar.addAction(image_action)
+        
         toolbar.addSeparator()
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -802,16 +1350,28 @@ class MainWindow(QMainWindow):
         self.pentagon_action = pentagon_action
         self.star_action = star_action
         self.hexagon_action = hexagon_action
+        self.image_action = image_action
         
         self.shape_tool_actions = [self.rect_action, self.circle_action, self.triangle_action,
                                    self.diamond_action, self.pentagon_action, self.star_action, self.hexagon_action]
         
     def set_tool(self, tool):
-        # 设置像素网格中的当前工具
         self.pixel_grid.set_tool(tool)
         
+    def import_image(self):
+        self.pixel_grid.set_tool(PixelGridWidget.TOOL_IMAGE)
+        self.image_action.setChecked(True)
+        
+        success = self.pixel_grid.import_image()
+        if not success:
+            self.switch_to_pencil_tool()
+    
+    def switch_to_pencil_tool(self):
+        self.pixel_grid.set_tool(PixelGridWidget.TOOL_PENCIL)
+        self.pencil_action.setChecked(True)
+        self.image_action.setChecked(False)
+    
     def on_fill_toggled(self, checked):
-        # 处理填充复选框切换
         for tool in [PixelGridWidget.TOOL_RECTANGLE, PixelGridWidget.TOOL_CIRCLE, 
                      PixelGridWidget.TOOL_TRIANGLE, PixelGridWidget.TOOL_DIAMOND,
                      PixelGridWidget.TOOL_PENTAGON, PixelGridWidget.TOOL_STAR,
@@ -821,18 +1381,15 @@ class MainWindow(QMainWindow):
         self.pixel_grid.set_fill_mode(self.pixel_grid.current_tool, checked)
         
     def update_grid_size(self):
-        # 根据微调框值更新网格大小
         width = self.width_spinbox.value()
         height = self.height_spinbox.value()
         self.pixel_grid.set_grid_size(width, height)
         
     def update_guideline_interval(self):
-        # 根据微调框值更新辅助线间隔
         interval = self.guideline_spinbox.value()
         self.pixel_grid.set_guideline_interval(interval)
         
     def clear_grid(self):
-        # 清除像素网格
         self.pixel_grid.clear_grid()
 
 
