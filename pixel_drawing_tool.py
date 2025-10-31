@@ -15,8 +15,6 @@ Github: https://github.com/2549850807/Pixel-Drawing
 更新日期: 2025-10-31
 """
 
-# 以下导入需要安装PyQt6库
-# pip install PyQt6
 import sys
 import os
 import math
@@ -1147,12 +1145,11 @@ class PixelGridWidget(QWidget):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("像素绘制工具")
+        self.setWindowTitle("像素绘制工具 Github:https://github.com/2549850807/Pixel-Drawing")
         self.setGeometry(100, 100, 800, 600)
         
-        icon_path = os.path.join(os.path.dirname(__file__), "app_icon.ico")
-        if os.path.exists(icon_path):
-            self.setWindowIcon(QIcon(icon_path))
+        # 设置窗口图标，支持打包后环境
+        self.set_window_icon()
         
         QApplication.instance().installEventFilter(self)
         
@@ -1219,6 +1216,22 @@ class MainWindow(QMainWindow):
 
         undo_shortcut = QShortcut(QKeySequence('Ctrl+Z'), self)
         undo_shortcut.activated.connect(self.undo_last_action)
+        
+    def set_window_icon(self):
+        """设置窗口图标，确保在打包后环境中也能正确显示"""
+        icon_path = os.path.join(os.path.dirname(__file__), "app_icon.ico")
+        if os.path.exists(icon_path):
+            self.setWindowIcon(QIcon(icon_path))
+            return
+            
+        try:
+            if getattr(sys, '_MEIPASS', None):
+                icon_path = os.path.join(getattr(sys, '_MEIPASS'), "app_icon.ico")
+                if os.path.exists(icon_path):
+                    self.setWindowIcon(QIcon(icon_path))
+                    return
+        except:
+            pass
         
     def undo_last_action(self):
         if hasattr(self.pixel_grid, 'history') and self.pixel_grid.history:
