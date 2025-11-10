@@ -4,6 +4,8 @@
 
 项目的核心为显示像素点，所以只要将代码中的宏定义改为自己的像素点绘制函数，即可适配所有的屏幕。
 
+* 视频教程：https://www.bilibili.com/video/BV1F91eB5EpL/?vd_source=5ccd64d3c4d113ad5f6b8b690789ec0f
+
 ## 功能特点
 
 - **多种绘图工具**：
