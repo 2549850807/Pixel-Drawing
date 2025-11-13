@@ -69,9 +69,7 @@ python pixel_drawing_tool.py
 - **Delete**：清屏
 - **Ctrl + 鼠标滚轮**：缩放画布
 
-## 代码生成格式
-
-导出的 C 代码遵循以下格式：
+## 代码生成格式（逐点绘制）
 
 ```c
 void Pixel_Image_Draw(void);
@@ -84,6 +82,30 @@ void Pixel_Image_Draw(void) {
     // 更多像素绘制命令...
 }
 ```
+
+## 代码生成格式（中心绘制）
+
+```C
+void Pixel_Image_Draw(unsigned int x, unsigned int y);
+
+#define Pixel_Draw(x, y) my_pixel_draw(x, y) // 将此处替换为自己的像素点显示函数即可（注意要以左上角为原点）
+
+void Pixel_Image_Draw(unsigned int x, unsigned int y) {
+    // 基于中心点(x,y)绘制图形，图形中心位于相对坐标(15, 12)
+    Pixel_Draw(x + (-2), y + (-2));
+    Pixel_Draw(x + (2), y + (-2));
+    Pixel_Draw(x + (-1), y + (-1));
+    Pixel_Draw(x + (1), y + (-1));
+    Pixel_Draw(x + (0), y + (0));
+    Pixel_Draw(x + (-1), y + (1));
+    Pixel_Draw(x + (1), y + (1));
+    Pixel_Draw(x + (-2), y + (2));
+    Pixel_Draw(x + (2), y + (2));
+}
+```
+
+
+
 # 更新日志
 
 * 2025.10.31：增加图片导入放置的功能
