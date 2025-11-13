@@ -12,7 +12,7 @@
 
 作者: MistyRainDreamX
 Github: https://github.com/2549850807/Pixel-Drawing
-更新日期: 2025-10-31
+更新日期: 2025-11-13
 """
 
 import sys
@@ -21,7 +21,7 @@ import math
 import subprocess
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QLabel, QSpinBox, QPushButton,
-    QVBoxLayout, QHBoxLayout, QToolBar, QColorDialog, QSizePolicy, QScrollArea, QToolButton, QMenu, QFileDialog, QCheckBox, QMessageBox, QProgressDialog
+    QVBoxLayout, QHBoxLayout, QToolBar, QColorDialog, QSizePolicy, QScrollArea, QToolButton, QMenu, QFileDialog, QCheckBox, QMessageBox, QProgressDialog, QDialog
 )
 from PyQt6.QtCore import Qt, QRect, QPoint, QEvent
 from PyQt6.QtGui import QPainter, QColor, QMouseEvent, QWheelEvent, QIcon, QPixmap, QAction, QActionGroup, QKeySequence, QShortcut
@@ -1239,10 +1239,38 @@ class MainWindow(QMainWindow):
             self.pixel_grid.update()
         
     def create_pixel_files(self):
+        # 创建对话框让用户选择绘制模式
+        dialog = QDialog(self)
+        dialog.setWindowTitle("选择绘制模式")
+        dialog.setModal(True)
+        dialog.resize(300, 150)
+        
+        layout = QVBoxLayout(dialog)
+        
+        label = QLabel("请选择生成代码的绘制模式：")
+        layout.addWidget(label)
+        
+        point_button = QPushButton("逐点绘制")
+        point_button.clicked.connect(lambda: [dialog.done(1), self.generate_code_with_mode("point")])
+        layout.addWidget(point_button)
+        
+        center_button = QPushButton("中心绘制")
+        center_button.clicked.connect(lambda: [dialog.done(2), self.generate_code_with_mode("center")])
+        layout.addWidget(center_button)
+        
+        dialog.exec()
+        
+    def generate_code_with_mode(self, mode):
         directory = QFileDialog.getExistingDirectory(self, "Select Output Directory")
         if not directory:
             return
-        
+            
+        if mode == "point":
+            self.generate_point_drawing_code(directory)
+        elif mode == "center":
+            self.generate_center_drawing_code(directory)
+    
+    def generate_point_drawing_code(self, directory):
         lines = []
         lines.append('void Pixel_Image_Draw(void);\n\n')
         lines.append('#define Pixel_Draw(x, y) my_pixel_draw(x, y)\n\n')
@@ -1263,7 +1291,58 @@ class MainWindow(QMainWindow):
             f.write(c_content)
         
         try:
-            import subprocess
+            subprocess.Popen(['notepad.exe', c_path])
+        except Exception:
+            pass
+    
+    def generate_center_drawing_code(self, directory):
+        grid = self.pixel_grid.grid
+        height = len(grid)
+        width = len(grid[0]) if height > 0 else 0
+        
+        # 计算图形的中心点
+        min_x, min_y = width, height
+        max_x, max_y = -1, -1
+        pixel_count = 0
+        
+        for y in range(height):
+            for x in range(width):
+                if grid[y][x]:
+                    min_x = min(min_x, x)
+                    min_y = min(min_y, y)
+                    max_x = max(max_x, x)
+                    max_y = max(max_y, y)
+                    pixel_count += 1
+        
+        # 如果没有像素被绘制，使用默认中心点
+        if pixel_count == 0:
+            center_x, center_y = width // 2, height // 2
+        else:
+            # 计算边界框的中心点
+            center_x = (min_x + max_x) // 2
+            center_y = (min_y + max_y) // 2
+        
+        lines = []
+        lines.append(f'void Pixel_Image_Draw(unsigned int x, unsigned int y);\n\n')
+        lines.append('#define Pixel_Draw(x, y) my_pixel_draw(x, y)\n\n')
+        lines.append(f'void Pixel_Image_Draw(unsigned int x, unsigned int y) {{\n')
+        lines.append(f'    // 基于中心点(x,y)绘制图形，图形中心位于相对坐标({center_x}, {center_y})\n')
+        
+        # 生成相对于中心点的坐标
+        for y in range(height):
+            for x in range(width):
+                if grid[y][x]:
+                    rel_x = x - center_x
+                    rel_y = y - center_y
+                    lines.append(f"    Pixel_Draw(x + ({rel_x}), y + ({rel_y}));\n")
+        lines.append('}\n')
+        c_content = ''.join(lines)
+        
+        c_path = os.path.join(directory, 'my_pixel.c')
+        with open(c_path, 'w', encoding='utf-8', newline='') as f:
+            f.write(c_content)
+        
+        try:
             subprocess.Popen(['notepad.exe', c_path])
         except Exception:
             pass
