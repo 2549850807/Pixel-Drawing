@@ -877,6 +877,13 @@ class PixelGridWidget(QWidget):
         return x, y
 
     def mousePressEvent(self, event: QMouseEvent):
+        # 添加Ctrl+左键显示坐标的功能
+        if event.button() == Qt.MouseButton.LeftButton and (event.modifiers() & Qt.KeyboardModifier.ControlModifier):
+            x, y = self._get_pixel_coordinates(event.position())
+            x, y = self._clamp_to_bounds(x, y)
+            QMessageBox.information(self, "坐标信息", f"当前像素坐标: ({x}, {y})")
+            return
+            
         if self.current_tool == self.TOOL_IMAGE and self.is_placing_image:
             if event.button() == Qt.MouseButton.LeftButton:
                 if self.image_data and self.image_position:
